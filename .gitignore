@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# PyPI/setuptools
+dist/
+build/
+*.egg-info/
+.eggs/
+
 # C extensions
 *.so
 
