@@ -36,7 +36,7 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
 
 ## Installation
 
-### Option 1: Install from PyPI
+### Install from PyPI
 
 ```bash
 # Install from PyPI
@@ -46,17 +46,7 @@ pip install check-bedrock-access
 check-bedrock-access
 ```
 
-### Option 2: Install required packages
-
-```bash
-# Install required packages
-pip install boto3 rich
-
-# Or using the requirements.txt file
-pip install -r requirements.txt
-```
-
-### Option 2: Use a virtual environment
+### Development Installation
 
 ```bash
 # Create a virtual environment

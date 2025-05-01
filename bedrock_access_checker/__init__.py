@@ -5,4 +5,4 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
 to access AWS Bedrock services and models.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

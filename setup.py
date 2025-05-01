@@ -5,8 +5,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="check-bedrock-access",
-    version="0.1.0",
-    author="Scott Freedman",
+    version="1.0.0",
+    author="Scott Friedman and Project Contributors",
     author_email="scttfrdmn@github.com",
     description="A tool to verify AWS Bedrock access and permissions",
     long_description=long_description,
