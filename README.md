@@ -36,12 +36,45 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
 
 ## Installation
 
+### Option 1: Install required packages
+
 ```bash
 # Install required packages
 pip install boto3 rich
+
+# Or using the requirements.txt file
+pip install -r requirements.txt
+```
+
+### Option 2: Use a virtual environment
+
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate the virtual environment
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Option 3: Use pipx (Recommended)
+
+[pipx](https://github.com/pypa/pipx) is a tool to run Python applications in isolated environments:
+
+```bash
+# Install pipx
+pip install --user pipx
+pipx ensurepath
+
+# Run directly from GitHub (no installation required)
+pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py
 ```
 
 ## Usage
+
+### Basic Options
 
 ```bash
 # Basic usage (uses default profile)
@@ -58,6 +91,19 @@ python check-bedrock-access.py --output json
 
 # Export results to CSV
 python check-bedrock-access.py --output csv
+```
+
+### Using with pipx
+
+```bash
+# Run with default profile
+pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py
+
+# With a specific profile
+pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py --profile your-profile
+
+# Interactive mode
+pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py --interactive
 ```
 
 ## Screenshots
