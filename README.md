@@ -20,6 +20,7 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
   - Tests actual model inference with minimal prompts
   - Provides detailed specification for each model
   - Suggests SageMaker JumpStart alternatives for missing models
+  - Estimates model usage costs with per-token pricing
 
 - **Clear Visual Dashboard:**
   - Summary dashboard showing overall status
@@ -162,7 +163,16 @@ python check-bedrock-access.py
 # Use a specific AWS profile
 python check-bedrock-access.py --profile myprofile
 
-# Interactive profile selection and region selection
+# Check multiple specific profiles
+python check-bedrock-access.py --profile dev --profile prod --profile staging
+
+# Check all configured profiles
+python check-bedrock-access.py --all-profiles
+
+# Compare results across multiple profiles
+python check-bedrock-access.py --all-profiles --compare
+
+# Interactive profile and region selection
 python check-bedrock-access.py --interactive
 
 # Export results to various formats
@@ -185,8 +195,14 @@ python check-bedrock-access.py --advanced
 # Check SageMaker JumpStart alternatives for unavailable Bedrock models
 python check-bedrock-access.py --sagemaker-alternatives
 
+# Show cost estimates for available Bedrock models
+python check-bedrock-access.py --estimate-costs
+
 # Comprehensive check with all features
-python check-bedrock-access.py --all-regions --test-invoke --advanced --sagemaker-alternatives
+python check-bedrock-access.py --all-regions --test-invoke --advanced --sagemaker-alternatives --estimate-costs
+
+# Multi-account organization-wide check with comparison
+python check-bedrock-access.py --all-profiles --all-regions --compare --output html
 ```
 
 ### Using with pipx (Recommended for One-Time Use)
@@ -206,6 +222,9 @@ pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-
 
 # Advanced mode with model invocation testing
 pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py --test-invoke --advanced
+
+# Cost estimation for available models
+pipx run --spec git+https://github.com/scttfrdmn/check-bedrock-access.git check-bedrock-access.py --estimate-costs
 ```
 
 ### Using with pyenv
@@ -294,6 +313,31 @@ For models you don't have access to, the tool can suggest alternatives available
 │ amazon.titan-embed-text-v2:0       │ BGE Large Embeddings    │ Strong text embedding alternative   │
 │                                     │ (huggingface-textembedding-bge-large-en) │                  │
 └────────────────────────────────────┴─────────────────────────┴────────────────────────────────────┘
+```
+
+### Cost Estimates
+
+When using `--estimate-costs`, you'll get detailed pricing information:
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    Bedrock Cost Estimates (per 1M tokens)                   │
+└────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────┬────────────┬─────────────┬────────────────┬──────────────────┐
+│ Model                                 │ Input Cost │ Output Cost │ Context Window │ Common Usage Est. │
+├───────────────────────────────────────┼────────────┼─────────────┼────────────────┼──────────────────┤
+│ anthropic.claude-3-sonnet-20240229-v1:0 │ $3.00      │ $15.00      │ 200,000 tokens │ $9.00            │
+│ anthropic.claude-3-haiku-20240307-v1:0  │ $0.25      │ $1.25       │ 200,000 tokens │ $0.75            │
+│ anthropic.claude-v2:1                   │ $8.00      │ $24.00      │ 100,000 tokens │ $24.00           │
+│ amazon.titan-text-express-v1            │ $0.80      │ $1.20       │ 8,000 tokens   │ $1.80            │
+│ amazon.titan-embed-text-v1              │ $0.10      │ $0.00       │ 8,000 tokens   │ $0.15            │
+└───────────────────────────────────────┴────────────┴─────────────┴────────────────┴──────────────────┘
+
+Cost Estimate Details:
+• Common Usage Estimate: Cost for 1,000 requests with 1,500 input tokens and 500 output tokens each
+• Pricing may vary by region and is subject to change
+• Context window shows maximum tokens allowed per request
+• For most accurate pricing, visit AWS Pricing Calculator or Bedrock console
 ```
 
 ### Model Details (Advanced Mode)

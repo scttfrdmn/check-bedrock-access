@@ -44,6 +44,7 @@ check_results = {
     "bedrock_runtime": {"status": None, "available": [], "details": [], "errors": []},
     "bedrock_models": {"status": None, "available": [], "details": [], "errors": []},
     "key_models": {"status": None, "available": [], "missing": [], "details": [], "errors": []},
+    "cost_estimates": {"models": {}, "details": []},
 }
 
 # Version comparison utility
@@ -1163,23 +1164,179 @@ def display_summary_dashboard():
     except PackageNotFoundError:
         pass
 
-def output_results(format_type):
+def estimate_model_costs(available_models=None, region=None, profile_name=None):
+    """
+    Estimate costs for model usage based on token pricing
+    
+    Args:
+        available_models (list, optional): List of model IDs to estimate costs for.
+                                          If None, uses models from check_results.
+        region (str, optional): AWS region to use for pricing (prices may vary by region)
+        profile_name (str, optional): AWS profile name to use
+        
+    Returns:
+        dict: Dictionary of cost estimates by model
+    """
+    console.print("\n[bold]Estimating Model Usage Costs...[/bold]")
+    
+    # Use available models from check_results if none provided
+    if available_models is None:
+        available_models = check_results["key_models"]["available"]
+    
+    if not available_models:
+        console.print("[yellow]No models available for cost estimation.[/yellow]")
+        return {}
+    
+    # Define model pricing (per million tokens, US regions) - May 2025 pricing
+    model_pricing = {
+        # Claude models
+        "anthropic.claude-3-opus": {"input": 15.00, "output": 75.00, "context_window": 200000},
+        "anthropic.claude-3-sonnet": {"input": 3.00, "output": 15.00, "context_window": 200000},
+        "anthropic.claude-3-haiku": {"input": 0.25, "output": 1.25, "context_window": 200000},
+        "anthropic.claude-3.5-sonnet": {"input": 3.00, "output": 15.00, "context_window": 200000},
+        "anthropic.claude-3.5-haiku": {"input": 0.80, "output": 4.00, "context_window": 200000},
+        "anthropic.claude-3.5-haiku-optimized": {"input": 1.00, "output": 5.00, "context_window": 200000},
+        "anthropic.claude-3.7-sonnet": {"input": 3.00, "output": 15.00, "context_window": 200000},
+        "anthropic.claude-v2": {"input": 8.00, "output": 24.00, "context_window": 100000},
+        "anthropic.claude-instant-v1": {"input": 1.63, "output": 5.51, "context_window": 100000},
+        
+        # Amazon Titan models
+        "amazon.titan-text-express-v1": {"input": 0.80, "output": 1.20, "context_window": 8000},
+        "amazon.titan-embed-text-v1": {"input": 0.10, "output": 0.00, "context_window": 8000},
+        "amazon.titan-embed-text-v2:0": {"input": 0.10, "output": 0.00, "context_window": 8000},
+        
+        # Cohere models
+        "cohere.command-text-v14": {"input": 0.50, "output": 1.50, "context_window": 4000},
+        
+        # Meta models
+        "meta.llama2-13b-chat-v1": {"input": 0.75, "output": 1.00, "context_window": 4000},
+    }
+    
+    # Create a table for cost estimates
+    table = Table(title="Bedrock Cost Estimates (per 1M tokens)", box=ROUNDED)
+    table.add_column("Model", style="cyan")
+    table.add_column("Input Cost", style="green")
+    table.add_column("Output Cost", style="magenta")
+    table.add_column("Context Window", style="yellow")
+    table.add_column("Common Usage Est.", style="blue")
+    
+    cost_estimates = {}
+    
+    for model_id in available_models:
+        # Extract the base model name without version
+        base_model_id = model_id.split(':')[0]  # Remove version if present
+        base_model_parts = base_model_id.split('.')
+        
+        if len(base_model_parts) >= 2:
+            # Get general model family
+            model_family = f"{base_model_parts[0]}.{base_model_parts[1].split('-')[0]}"
+            
+            # Try to match pricing data
+            pricing_key = None
+            
+            # Try direct match first
+            if base_model_id in model_pricing:
+                pricing_key = base_model_id
+            # Try matching model family 
+            elif model_family in model_pricing:
+                pricing_key = model_family
+            # Try partial matching
+            else:
+                for key in model_pricing:
+                    if key in base_model_id or model_family in key:
+                        pricing_key = key
+                        break
+            
+            if pricing_key:
+                # Get pricing data
+                pricing = model_pricing[pricing_key]
+                
+                # Calculate estimated cost for common usage (1000 requests of 1500 tokens input, 500 tokens output)
+                requests = 1000
+                input_tokens = 1500
+                output_tokens = 500
+                
+                input_cost = (pricing["input"] * (input_tokens * requests) / 1000000)
+                output_cost = (pricing["output"] * (output_tokens * requests) / 1000000)
+                total_cost = input_cost + output_cost
+                
+                # Store the estimate
+                cost_estimates[model_id] = {
+                    "input_price": pricing["input"],
+                    "output_price": pricing["output"],
+                    "context_window": pricing["context_window"],
+                    "common_usage_estimate": total_cost,
+                    "pricing_note": f"Pricing based on {pricing_key} rates" if pricing_key != base_model_id else "Direct pricing match",
+                }
+                
+                # Add to table
+                table.add_row(
+                    model_id,
+                    f"${pricing['input']:.2f}",
+                    f"${pricing['output']:.2f}",
+                    f"{pricing['context_window']:,} tokens",
+                    f"${total_cost:.2f}"
+                )
+                
+                # Add to check results
+                check_results["cost_estimates"]["models"][model_id] = cost_estimates[model_id]
+                
+                # Add details
+                check_results["cost_estimates"]["details"].append(
+                    f"{model_id}: Input ${pricing['input']:.2f}, Output ${pricing['output']:.2f}, 1K requests est: ${total_cost:.2f}"
+                )
+            else:
+                # Add to table with unknown pricing
+                table.add_row(
+                    model_id,
+                    "Unknown",
+                    "Unknown",
+                    "Unknown",
+                    "Unknown"
+                )
+                
+                # Still store the model but with placeholder data
+                cost_estimates[model_id] = {
+                    "input_price": None,
+                    "output_price": None,
+                    "context_window": None,
+                    "common_usage_estimate": None,
+                    "pricing_note": "Pricing not available for this model",
+                }
+                
+                # Add to check results
+                check_results["cost_estimates"]["models"][model_id] = cost_estimates[model_id]
+    
+    # Display the table
+    console.print(table)
+    
+    # Display usage explanation
+    console.print("\n[bold]Cost Estimate Details:[/bold]")
+    console.print("[dim]• Common Usage Estimate: Cost for 1,000 requests with 1,500 input tokens and 500 output tokens each[/dim]")
+    console.print("[dim]• Pricing may vary by region and is subject to change[/dim]")
+    console.print("[dim]• Context window shows maximum tokens allowed per request[/dim]")
+    console.print("[dim]• For most accurate pricing, visit AWS Pricing Calculator or Bedrock console[/dim]")
+    
+    return cost_estimates
+
+def output_results(format_type, prefix=""):
     """
     Output results in the specified format
     
     Args:
         format_type (str): 'json', 'csv', or 'html'
+        prefix (str, optional): Prefix to add to the output filename
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if format_type == 'json':
-        filename = f"bedrock_check_{timestamp}.json"
+        filename = f"bedrock_check_{prefix}{timestamp}.json"
         with open(filename, 'w') as f:
             json.dump(check_results, f, indent=2)
         console.print(f"\n[green]Results saved to {filename}[/green]")
     
     elif format_type == 'csv':
-        filename = f"bedrock_check_{timestamp}.csv"
+        filename = f"bedrock_check_{prefix}{timestamp}.csv"
         with open(filename, 'w') as f:
             f.write("Component,Status,Details\n")
             
@@ -1213,7 +1370,7 @@ def output_results(format_type):
         console.print(f"\n[green]Results saved to {filename}[/green]")
         
     elif format_type == 'html':
-        filename = f"bedrock_check_{timestamp}.html"
+        filename = f"bedrock_check_{prefix}{timestamp}.html"
         
         # Create an HTML report with improved visualization
         html = []
@@ -1356,6 +1513,36 @@ def output_results(format_type):
         html.append("      </div>")
         html.append("    </div>")
         
+        # Cost Estimation Section
+        if "cost_estimates" in check_results and check_results["cost_estimates"]["models"]:
+            html.append("    <div class='details-section'>")
+            html.append("      <h2>Cost Estimates</h2>")
+            html.append("      <p>Estimated costs for model usage based on current AWS Bedrock pricing (as of May 2025):</p>")
+            html.append("      <table class='summary-table'>")
+            html.append("        <tr><th>Model</th><th>Input Cost (per 1M tokens)</th><th>Output Cost (per 1M tokens)</th><th>Context Window</th><th>Est. Cost for 1K Requests</th></tr>")
+            
+            # Sort models by estimated cost (descending)
+            sorted_models = sorted(
+                check_results["cost_estimates"]["models"].items(), 
+                key=lambda x: x[1]["common_usage_estimate"] if x[1]["common_usage_estimate"] is not None else 0,
+                reverse=True
+            )
+            
+            for model_id, cost_data in sorted_models:
+                if cost_data["input_price"] is not None:
+                    html.append(f"        <tr>")
+                    html.append(f"          <td>{model_id}</td>")
+                    html.append(f"          <td>${cost_data['input_price']:.2f}</td>")
+                    html.append(f"          <td>${cost_data['output_price']:.2f}</td>")
+                    html.append(f"          <td>{cost_data['context_window']:,} tokens</td>")
+                    html.append(f"          <td>${cost_data['common_usage_estimate']:.2f}</td>")
+                    html.append(f"        </tr>")
+            
+            html.append("      </table>")
+            html.append("      <p><small>Cost estimates are based on 1,000 requests with 1,500 input tokens and 500 output tokens each.</small></p>")
+            html.append("      <p><small>Actual costs may vary based on usage patterns, AWS promotions, and pricing changes.</small></p>")
+            html.append("    </div>")
+            
         # SageMaker Alternatives Section
         if "sagemaker_alternatives" in check_results and check_results["sagemaker_alternatives"]:
             # Exclude error entry when counting alternatives
@@ -1393,6 +1580,11 @@ def output_results(format_type):
         if "model_invocations" in check_results:
             invoke_success = check_results["model_invocations"]["successful"]
             invoke_fail = check_results["model_invocations"]["failed"]
+            
+        # Get cost estimates if available
+        model_costs = {}
+        if "cost_estimates" in check_results and "models" in check_results["cost_estimates"]:
+            model_costs = check_results["cost_estimates"]["models"]
         
         for model in sorted(all_key_models):
             is_available = model in check_results["key_models"]["available"]
@@ -1428,6 +1620,19 @@ def output_results(format_type):
                 html.append("          <details>")
                 html.append("            <summary>Advanced Details</summary>")
                 html.append("            <div style='margin-top: 10px;'>")
+                
+                # Cost information if available
+                if model in model_costs and model_costs[model]["input_price"] is not None:
+                    cost_data = model_costs[model]
+                    html.append("              <h4>Cost Information</h4>")
+                    html.append("              <ul>")
+                    html.append(f"                <li><strong>Input Cost:</strong> ${cost_data['input_price']:.2f} per 1M tokens</li>")
+                    html.append(f"                <li><strong>Output Cost:</strong> ${cost_data['output_price']:.2f} per 1M tokens</li>")
+                    html.append(f"                <li><strong>Context Window:</strong> {cost_data['context_window']:,} tokens</li>")
+                    if cost_data['common_usage_estimate']:
+                        html.append(f"                <li><strong>Usage Estimate:</strong> ${cost_data['common_usage_estimate']:.2f} for 1K standard requests</li>")
+                    html.append(f"                <li><strong>Note:</strong> {cost_data['pricing_note']}</li>")
+                    html.append("              </ul>")
                 
                 # Specs section
                 if "specs" in model_details and model_details["specs"]:
