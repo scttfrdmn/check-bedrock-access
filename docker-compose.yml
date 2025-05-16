@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  bedrock-checker:
+    build: .
+    volumes:
+      # Mount AWS credentials (read-only)
+      - ${HOME}/.aws:/home/bedrock-checker/.aws:ro
+      # Mount a directory for output reports
+      - ./reports:/tmp/bedrock-reports
+    # Override the default command to run with interactive mode
+    command: --interactive
+    # Run in interactive TTY mode for the rich UI to work properly
+    tty: true
+    stdin_open: true

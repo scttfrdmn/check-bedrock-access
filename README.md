@@ -41,6 +41,8 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
   - Specific region targeting (check only regions you care about)
   - Export results to JSON, CSV, or HTML
   - Advanced mode for detailed model capabilities
+  - Docker container for environment-independent deployment
+  - Multiple installation methods (pip, pipx, Docker)
 
 ## Requirements
 
@@ -223,6 +225,30 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e .
 check-bedrock-access --interactive
 ```
+
+### Using with Docker
+
+You can run the tool using Docker without installing Python or any dependencies locally:
+
+```bash
+# Using the provided convenience script
+./docker-run.sh --interactive
+
+# Or using docker-compose
+docker-compose up --build
+
+# Run with specific options
+./docker-run.sh --profile myprofile --all-regions --test-invoke
+
+# Export HTML report to the mounted reports directory
+./docker-run.sh --output html
+```
+
+The Docker container:
+- Mounts your local `~/.aws` directory for credentials (read-only)
+- Creates a `./reports` directory for output files
+- Runs with a non-root user for better security
+- Works with all tool features including interactive mode
 
 ## Example Output
 
