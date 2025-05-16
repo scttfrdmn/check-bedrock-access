@@ -48,6 +48,69 @@ A comprehensive utility to check if your AWS credentials have the necessary perm
 - boto3 >= 1.28.0 (for Bedrock support)
 - rich (for console formatting)
 
+## Development
+
+### Setting Up Development Environment
+
+```bash
+# Clone the repository
+git clone https://github.com/scttfrdmn/check-bedrock-access.git
+cd check-bedrock-access
+
+# Create a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install development dependencies
+pip install -r requirements-dev.txt
+
+# Install pre-commit hooks
+pre-commit install
+```
+
+### Linting and Formatting
+
+The project uses:
+- flake8 for linting
+- black for code formatting
+- isort for import sorting
+
+Run linting checks:
+
+```bash
+# Run all checks
+pre-commit run --all-files
+
+# Or run individual tools
+black .
+flake8
+isort .
+```
+
+### Testing
+
+The project uses pytest for testing. Tests are divided into:
+- Unit tests with mocked AWS responses
+- Integration tests requiring real AWS credentials
+
+Run tests:
+
+```bash
+# Run all tests
+pytest
+
+# Run only unit tests
+pytest -m unit
+
+# Run only integration tests (requires AWS credentials)
+pytest -m integration
+
+# Run with coverage report
+pytest --cov=bedrock_access_checker
+```
+
+The integration tests will be skipped automatically if no valid AWS credentials are found.
+
 ## Installation
 
 ### Install from PyPI
