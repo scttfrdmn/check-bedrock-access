@@ -219,12 +219,13 @@ def check_aws_credentials(profile_name=None):
         check_results["aws_credentials"]["errors"].append(error_msg)
         return False
 
-def check_bedrock_regions(profile_name=None):
+def check_bedrock_regions(profile_name=None, regions_to_check=None):
     """
     Check which regions have Bedrock available
     
     Args:
         profile_name (str, optional): AWS profile name to use
+        regions_to_check (list, optional): Specific regions to check
     
     Returns:
         list: List of available regions
@@ -234,11 +235,38 @@ def check_bedrock_regions(profile_name=None):
     # Reset results for this check
     check_results["bedrock_regions"] = {"status": None, "available": [], "details": [], "errors": []}
     
-    # Common regions to check
-    regions_to_check = [
-        'us-east-1', 
-        'us-west-2', 
-    ]
+    # All regions where Bedrock is available (define at module level for import in CLI)
+all_bedrock_regions = [
+    'us-east-1',    # N. Virginia
+    'us-west-2',    # Oregon
+    'ap-northeast-1', # Tokyo
+    'ap-southeast-1', # Singapore
+    'eu-central-1',   # Frankfurt
+    'us-east-2',      # Ohio 
+    'ap-south-1',     # Mumbai
+    'ap-northeast-2', # Seoul
+    'eu-west-1',      # Ireland
+    'ca-central-1',   # Canada
+]
+
+def check_bedrock_regions(profile_name=None, regions_to_check=None):
+    """
+    Check which regions have Bedrock available
+    
+    Args:
+        profile_name (str, optional): AWS profile name to use
+        regions_to_check (list, optional): Specific regions to check
+    
+    Returns:
+        list: List of available regions
+    """
+    console.print("\n[bold]Checking Bedrock availability in regions...[/bold]")
+    
+    # Reset results for this check
+    check_results["bedrock_regions"] = {"status": None, "available": [], "details": [], "errors": []}
+    
+    # Use provided regions or default to common ones
+    regions_to_check = regions_to_check if regions_to_check else ['us-east-1', 'us-west-2']
     
     # Create a table for results
     table = Table(title="Bedrock Region Availability", box=ROUNDED)
@@ -437,13 +465,338 @@ def check_bedrock_models(region, profile_name=None):
         if not check_results["bedrock_models"]["available"]:
             check_results["bedrock_models"]["status"] = STATUS_ERROR
 
-def check_specific_models_simple(region, profile_name=None):
+def test_model_invocation(model_id, region, profile_name=None):
+    """
+    Test a simple model invocation to verify full access
+    
+    Args:
+        model_id (str): The model ID to test
+        region (str): AWS region to test in
+        profile_name (str, optional): AWS profile name to use
+        
+    Returns:
+        bool: True if invocation successful, False otherwise
+        str: Response or error message
+    """
+    console.print(f"[dim]Testing model invocation for {model_id}...[/dim]")
+    
+    try:
+        # Create session with profile if specified
+        session = boto3.Session(profile_name=profile_name)
+        
+        # Create bedrock-runtime client
+        client = session.client('bedrock-runtime', region_name=region)
+        
+        # Prepare a minimal test prompt based on model type
+        if "embed" in model_id.lower():
+            # Embedding model
+            request_body = {
+                "inputText": "Hello, world!"
+            }
+        elif "anthropic.claude" in model_id.lower():
+            # Claude model
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 10,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Say hello in 5 words or less."}]
+                    }
+                ]
+            }
+        elif "cohere" in model_id.lower():
+            # Cohere model
+            request_body = {
+                "prompt": "Say hello in 5 words or less.",
+                "max_tokens": 10
+            }
+        elif "meta.llama" in model_id.lower():
+            # Llama model
+            request_body = {
+                "prompt": "Human: Say hello in 5 words or less.\nAssistant:",
+                "max_gen_len": 10
+            }
+        elif "titan" in model_id.lower():
+            # Titan model
+            request_body = {
+                "inputText": "Say hello in 5 words or less.",
+                "textGenerationConfig": {
+                    "maxTokenCount": 10
+                }
+            }
+        else:
+            # Generic format - may not work with all models
+            request_body = {
+                "prompt": "Say hello in 5 words or less.",
+                "max_tokens": 10
+            }
+        
+        # Invoke the model
+        response = client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(request_body)
+        )
+        
+        # Parse the response
+        response_body = json.loads(response['body'].read().decode('utf-8'))
+        
+        # Return success with shortened response
+        response_str = str(response_body)[:50] + "..." if len(str(response_body)) > 50 else str(response_body)
+        return True, f"Success: {response_str}"
+    
+    except Exception as e:
+        error_msg = str(e)
+        if "AccessDeniedException" in error_msg:
+            return False, "Access denied"
+        elif "ResourceNotFoundException" in error_msg:
+            return False, "Model not found"
+        elif "ValidationException" in error_msg:
+            return False, f"Validation error: {error_msg[:50]}..."
+        elif "ThrottlingException" in error_msg:
+            return False, "Rate limited"
+        else:
+            return False, f"Error: {error_msg[:50]}..."
+
+def check_sagemaker_jumpstart_alternatives(missing_model_ids, region, profile_name=None):
+    """
+    Check for SageMaker JumpStart alternatives for missing Bedrock models
+    
+    Args:
+        missing_model_ids (list): List of missing Bedrock model IDs
+        region (str): AWS region to check in
+        profile_name (str, optional): AWS profile name to use
+        
+    Returns:
+        dict: Dictionary mapping missing models to alternatives
+    """
+    console.print(f"\n[bold]Checking SageMaker JumpStart alternatives in {region}...[/bold]")
+    
+    # Initialize SageMaker JumpStart alternatives in check_results if not present
+    if "sagemaker_alternatives" not in check_results:
+        check_results["sagemaker_alternatives"] = {}
+    
+    # Create a mapping of Bedrock models to similar JumpStart models
+    # This is a manually curated list based on model capabilities
+    jumpstart_alternatives = {
+        # Claude alternatives
+        "anthropic.claude-3-opus": [
+            {"model_id": "huggingface-llm-llama-2-70b", "name": "Meta Llama 2 (70B)", "notes": "Open source alternative with strong capabilities"},
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Open source model with good performance for its size"},
+            {"model_id": "meta-textgeneration-llama-2-70b-f", "name": "Meta Llama 2 Chat (70B)", "notes": "Fine-tuned for chat and instruction following"}
+        ],
+        "anthropic.claude-3-sonnet": [
+            {"model_id": "huggingface-llm-llama-2-13b", "name": "Meta Llama 2 (13B)", "notes": "Smaller open source alternative"},
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Efficient open source model with good capabilities"}
+        ],
+        "anthropic.claude-3-haiku": [
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Comparable size with efficient performance"},
+            {"model_id": "huggingface-textgeneration-gpt2-xl", "name": "GPT-2 XL", "notes": "Fast text generation for simple tasks"}
+        ],
+        "anthropic.claude-v2": [
+            {"model_id": "huggingface-llm-llama-2-13b", "name": "Meta Llama 2 (13B)", "notes": "Good general purpose alternative"}
+        ],
+        # Titan alternatives
+        "amazon.titan": [
+            {"model_id": "huggingface-llm-falcon-7b", "name": "Falcon (7B)", "notes": "Good general purpose alternative"},
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Strong performance for its size"}
+        ],
+        # Embedding model alternatives
+        "amazon.titan-embed": [
+            {"model_id": "huggingface-textembedding-bge-large-en", "name": "BGE Large Embeddings", "notes": "Strong text embedding alternative"},
+            {"model_id": "huggingface-textembedding-all-mpnet-base-v2", "name": "MPNet Embeddings", "notes": "Good general purpose embeddings"}
+        ],
+        # Cohere alternatives
+        "cohere.command": [
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Comparable capabilities"},
+            {"model_id": "huggingface-llm-falcon-7b", "name": "Falcon (7B)", "notes": "Good general purpose alternative"}
+        ],
+        # Llama alternatives (mostly for completeness)
+        "meta.llama2": [
+            {"model_id": "huggingface-llm-mistral-7b", "name": "Mistral (7B)", "notes": "Alternative high-quality open source model"}
+        ]
+    }
+    
+    alternatives_found = {}
+    
+    try:
+        # Create session with profile if specified
+        session = boto3.Session(profile_name=profile_name)
+        
+        # Create SageMaker client
+        try:
+            sm_client = session.client('sagemaker', region_name=region)
+            
+            # Create a table for alternatives
+            table = Table(title=f"SageMaker JumpStart Alternatives", box=ROUNDED)
+            table.add_column("Missing Bedrock Model", style="red")
+            table.add_column("JumpStart Alternative", style="green")
+            table.add_column("Notes", style="cyan")
+            
+            # Check availability of alternatives for each missing model
+            for full_model_id in missing_model_ids:
+                # Extract the base model name (without version)
+                base_model_id = full_model_id.split(':')[0]  # Remove version if present
+                base_model_parts = base_model_id.split('.')
+                
+                if len(base_model_parts) >= 2:
+                    # Get just provider.model format (e.g., anthropic.claude, amazon.titan)
+                    simplified_id = f"{base_model_parts[0]}.{base_model_parts[1].split('-')[0]}"
+                    
+                    # Try to find alternatives for this model
+                    matched_alternatives = []
+                    
+                    # Check for direct match
+                    if simplified_id in jumpstart_alternatives:
+                        matched_alternatives = jumpstart_alternatives[simplified_id]
+                    else:
+                        # Try partial matching
+                        for model_key in jumpstart_alternatives:
+                            if simplified_id in model_key or model_key in simplified_id:
+                                matched_alternatives = jumpstart_alternatives[model_key]
+                                break
+                    
+                    if matched_alternatives:
+                        # Store the alternatives
+                        alternatives_found[full_model_id] = matched_alternatives
+                        check_results["sagemaker_alternatives"][full_model_id] = matched_alternatives
+                        
+                        # Add to the table
+                        for alt in matched_alternatives:
+                            table.add_row(
+                                full_model_id if matched_alternatives.index(alt) == 0 else "", 
+                                f"{alt['name']} ({alt['model_id']})",
+                                alt['notes']
+                            )
+            
+            # Display the alternatives table if any found
+            if alternatives_found:
+                console.print(table)
+                console.print(f"[green]✓ Found SageMaker JumpStart alternatives for {len(alternatives_found)} missing Bedrock models[/green]")
+            else:
+                console.print("[yellow]No SageMaker JumpStart alternatives found for your missing models[/yellow]")
+            
+            return alternatives_found
+            
+        except Exception as e:
+            error_msg = f"Error checking SageMaker JumpStart alternatives: {e}"
+            console.print(f"[yellow]{error_msg}[/yellow]")
+            check_results["sagemaker_alternatives"]["error"] = error_msg
+            return {}
+            
+    except Exception as e:
+        error_msg = f"Error initializing SageMaker client: {e}"
+        console.print(f"[yellow]{error_msg}[/yellow]")
+        check_results["sagemaker_alternatives"]["error"] = error_msg
+        return {}
+
+def get_model_quotas_and_details(model_id, region, profile_name=None):
+    """
+    Get detailed information about a model's quotas and inference capabilities
+    
+    Args:
+        model_id (str): The model ID to get information for
+        region (str): AWS region to check in
+        profile_name (str, optional): AWS profile name to use
+        
+    Returns:
+        dict: Dictionary with quota and inference details
+    """
+    details = {
+        "quotas": {},
+        "inference_params": {},
+        "pricing": {},
+        "specs": {}
+    }
+    
+    try:
+        # Create session with profile if specified
+        session = boto3.Session(profile_name=profile_name)
+        
+        # Get account quotas for the model using service quotas API
+        try:
+            quotas_client = session.client('service-quotas', region_name=region)
+            
+            # Get service code for Bedrock
+            service_code = "bedrock"
+            
+            # Try to get quotas for the model
+            response = quotas_client.list_service_quotas(
+                ServiceCode=service_code
+            )
+            
+            # Filter quotas related to the model (this is approximate as model IDs may not match quota names exactly)
+            model_name_parts = model_id.split('.')[-1].split('-')
+            for quota in response.get('Quotas', []):
+                quota_name = quota.get('QuotaName', '').lower()
+                
+                # Check if quota is related to this model by looking for substrings
+                relevant = False
+                for part in model_name_parts:
+                    if len(part) > 3 and part.lower() in quota_name:  # Only consider meaningful parts
+                        relevant = True
+                        break
+                
+                # Also include general throughput/rate quotas
+                if "throughput" in quota_name or "rate" in quota_name:
+                    relevant = True
+                    
+                if relevant:
+                    details["quotas"][quota.get('QuotaName')] = {
+                        "value": quota.get('Value'),
+                        "unit": quota.get('Unit'),
+                        "adjustable": quota.get('Adjustable', False)
+                    }
+        except Exception as e:
+            details["quotas"]["error"] = f"Could not fetch quotas: {str(e)}"
+        
+        # Get model details from Bedrock API
+        try:
+            bedrock_client = session.client('bedrock', region_name=region)
+            
+            # Get model details
+            response = bedrock_client.get_foundation_model(
+                modelIdentifier=model_id
+            )
+            
+            # Extract useful information
+            if 'modelDetails' in response:
+                model_details = response.get('modelDetails', {})
+                
+                # Get inference parameters
+                if 'inferenceParameters' in model_details:
+                    details["inference_params"] = model_details['inferenceParameters']
+                
+                # Get pricing information if available
+                if 'pricingDetails' in model_details:
+                    details["pricing"] = model_details['pricingDetails']
+                
+                # Get model specifications
+                details["specs"] = {
+                    "model_name": model_details.get('name', ''),
+                    "provider": model_details.get('providerName', ''),
+                    "input_modalities": model_details.get('inputModalities', []),
+                    "output_modalities": model_details.get('outputModalities', []),
+                    "customizations_supported": model_details.get('customizationsSupported', []),
+                    "response_streaming_supported": model_details.get('responseStreamingSupported', False),
+                }
+        except Exception as e:
+            details["specs"]["error"] = f"Could not fetch model details: {str(e)}"
+        
+        return details
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+def check_specific_models_simple(region, profile_name=None, test_invocation=False, advanced_mode=False):
     """
     Check specific models needed for common Bedrock use cases
     
     Args:
         region (str): AWS region to check
         profile_name (str, optional): AWS profile name to use
+        test_invocation (bool, optional): Whether to test model invocation
+        advanced_mode (bool, optional): Whether to show detailed model information
     """
     console.print(f"\n[bold]Checking key Bedrock model access in {region}...[/bold]")
     
@@ -454,15 +807,31 @@ def check_specific_models_simple(region, profile_name=None):
     # Create a table for key models
     table = Table(title=f"Key Models in {region}", box=ROUNDED)
     table.add_column("Model", style="cyan")
-    table.add_column("Status", style="green")
+    table.add_column("Listed", style="green")
+    if test_invocation:
+        table.add_column("Invocation", style="magenta")
     table.add_column("Purpose", style="blue")
     
     # Define models to check with their purpose
     needed_models = [
+        # Embedding models
         {"id": "amazon.titan-embed-text-v1", "purpose": "Text embeddings (V1)"},
         {"id": "amazon.titan-embed-text-v2:0", "purpose": "Text embeddings (V2)"},
+        
+        # Claude 3 models - latest and most advanced
+        {"id": "anthropic.claude-3-opus-20240229-v1:0", "purpose": "Text generation (Flagship)"},
         {"id": "anthropic.claude-3-sonnet-20240229-v1:0", "purpose": "Text generation (Mid-tier)"},
-        {"id": "anthropic.claude-3-haiku-20240307-v1:0", "purpose": "Text generation (Fastest)"}
+        {"id": "anthropic.claude-3-haiku-20240307-v1:0", "purpose": "Text generation (Fastest)"},
+        
+        # Claude 2 models - previous generation
+        {"id": "anthropic.claude-v2:1", "purpose": "Text generation (Previous gen)"},
+        {"id": "anthropic.claude-v2", "purpose": "Text generation (Previous gen)"},
+        {"id": "anthropic.claude-instant-v1", "purpose": "Text generation (Previous gen, fast)"},
+        
+        # Other useful models
+        {"id": "amazon.titan-text-express-v1", "purpose": "Amazon's text model"},
+        {"id": "cohere.command-text-v14", "purpose": "Cohere's text model"},
+        {"id": "meta.llama2-13b-chat-v1", "purpose": "Meta's open model"}
     ]
     
     try:
@@ -482,6 +851,14 @@ def check_specific_models_simple(region, profile_name=None):
         found_models = []
         missing_models = []
         
+        # Initialize invocation results in check_results if testing invocation
+        if test_invocation and "model_invocations" not in check_results:
+            check_results["model_invocations"] = {"successful": [], "failed": [], "details": []}
+            
+        # Initialize advanced details if in advanced mode
+        if advanced_mode and "model_details" not in check_results:
+            check_results["model_details"] = {}
+        
         for model_info in needed_models:
             model_id = model_info["id"]
             purpose = model_info["purpose"]
@@ -489,18 +866,90 @@ def check_specific_models_simple(region, profile_name=None):
             if model_id in available_models:
                 status_msg = f"Model {model_id} is available"
                 console.print(f"[green]✓ {status_msg}[/green]")
-                table.add_row(model_id, "✅ Available", purpose)
-                found_models.append(model_id)
                 
                 # Add to available models in results if not already there
                 if model_id not in check_results["key_models"]["available"]:
                     check_results["key_models"]["available"].append(model_id)
                 
                 check_results["key_models"]["details"].append(f"{model_id}: Available")
+                
+                # Advanced mode processing
+                model_details_table = None
+                if advanced_mode:
+                    # Get detailed model information
+                    console.print(f"[dim]  Getting detailed information for {model_id}...[/dim]")
+                    model_details = get_model_quotas_and_details(model_id, region, profile_name)
+                    
+                    # Store in results
+                    check_results["model_details"][model_id] = model_details
+                    
+                    # Create a detailed table for this model
+                    model_details_table = Table(title=f"Details for {model_id}", box=ROUNDED)
+                    model_details_table.add_column("Parameter", style="cyan")
+                    model_details_table.add_column("Value", style="yellow")
+                    
+                    # Add basic specs
+                    if "specs" in model_details and model_details["specs"]:
+                        for key, value in model_details["specs"].items():
+                            if key != "error":
+                                model_details_table.add_row(f"Spec: {key}", str(value))
+                    
+                    # Add inference parameters
+                    if "inference_params" in model_details and model_details["inference_params"]:
+                        for key, value in model_details["inference_params"].items():
+                            model_details_table.add_row(f"Param: {key}", str(value))
+                    
+                    # Add quota information
+                    if "quotas" in model_details and model_details["quotas"]:
+                        for key, value in model_details["quotas"].items():
+                            if key != "error":
+                                if isinstance(value, dict):
+                                    quota_str = f"{value.get('value')} {value.get('unit', '')}"
+                                    if value.get('adjustable'):
+                                        quota_str += " (adjustable)"
+                                    model_details_table.add_row(f"Quota: {key}", quota_str)
+                                else:
+                                    model_details_table.add_row(f"Quota: {key}", str(value))
+                
+                # Test invocation if requested
+                if test_invocation:
+                    invoke_success, invoke_msg = test_model_invocation(model_id, region, profile_name)
+                    
+                    if invoke_success:
+                        table.add_row(model_id, "✅ Available", "✅ Success", purpose)
+                        console.print(f"[green]  ✓ Invocation successful: {invoke_msg}[/green]")
+                        
+                        # Add to successful invocations
+                        if model_id not in check_results["model_invocations"]["successful"]:
+                            check_results["model_invocations"]["successful"].append(model_id)
+                        
+                        check_results["model_invocations"]["details"].append(f"{model_id}: {invoke_msg}")
+                    else:
+                        table.add_row(model_id, "✅ Available", f"❌ Failed: {invoke_msg}", purpose)
+                        console.print(f"[yellow]  ✗ Invocation failed: {invoke_msg}[/yellow]")
+                        
+                        # Add to failed invocations
+                        if model_id not in check_results["model_invocations"]["failed"]:
+                            check_results["model_invocations"]["failed"].append(model_id)
+                        
+                        check_results["model_invocations"]["details"].append(f"{model_id}: Failed - {invoke_msg}")
+                else:
+                    table.add_row(model_id, "✅ Available", purpose)
+                
+                # Display detailed model information if in advanced mode
+                if advanced_mode and model_details_table:
+                    console.print(model_details_table)
+                
+                found_models.append(model_id)
             else:
                 status_msg = f"Model {model_id} is not available"
                 console.print(f"[yellow]✗ {status_msg}[/yellow]")
-                table.add_row(model_id, "❌ Not Available", purpose)
+                
+                if test_invocation:
+                    table.add_row(model_id, "❌ Not Available", "❌ Not Tested", purpose)
+                else:
+                    table.add_row(model_id, "❌ Not Available", purpose)
+                
                 missing_models.append(model_id)
                 
                 # Add to missing models in results if not already there
@@ -603,6 +1052,29 @@ def display_summary_dashboard():
         key_details += " (no key models available)"
     table.add_row("Key Models", f"[{key_style}]{key_status}[/{key_style}]", key_details)
     
+    # Add model invocation results if available
+    if "model_invocations" in check_results:
+        invoke_success_count = len(check_results["model_invocations"]["successful"])
+        invoke_failed_count = len(check_results["model_invocations"]["failed"])
+        invoke_total = invoke_success_count + invoke_failed_count
+        
+        if invoke_total > 0:
+            invoke_status = STATUS_SUCCESS if invoke_failed_count == 0 else STATUS_WARNING if invoke_success_count > 0 else STATUS_ERROR
+            invoke_style = "green" if invoke_status == STATUS_SUCCESS else "yellow" if invoke_status == STATUS_WARNING else "red"
+            invoke_details = f"{invoke_success_count}/{invoke_total} models invoked successfully"
+            table.add_row("Model Invocation", f"[{invoke_style}]{invoke_status}[/{invoke_style}]", invoke_details)
+    
+    # Add SageMaker JumpStart alternatives if available
+    if "sagemaker_alternatives" in check_results and check_results["sagemaker_alternatives"]:
+        # Exclude error entry when counting alternatives
+        alternatives_count = sum(1 for k in check_results["sagemaker_alternatives"] if k != "error")
+        
+        if alternatives_count > 0:
+            sm_status = STATUS_INFO
+            sm_style = "blue"
+            sm_details = f"Found alternatives for {alternatives_count} missing Bedrock models"
+            table.add_row("SageMaker Alternatives", f"[{sm_style}]{sm_status}[/{sm_style}]", sm_details)
+    
     console.print(table)
     
     # Overall status
@@ -696,7 +1168,7 @@ def output_results(format_type):
     Output results in the specified format
     
     Args:
-        format_type (str): 'json' or 'csv'
+        format_type (str): 'json', 'csv', or 'html'
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -739,3 +1211,308 @@ def output_results(format_type):
             f.write(f"Key Models,{check_results['key_models']['status']},{key_details}\n")
             
         console.print(f"\n[green]Results saved to {filename}[/green]")
+        
+    elif format_type == 'html':
+        filename = f"bedrock_check_{timestamp}.html"
+        
+        # Create an HTML report with improved visualization
+        html = []
+        html.append("<!DOCTYPE html>")
+        html.append("<html lang='en'>")
+        html.append("<head>")
+        html.append("  <meta charset='UTF-8'>")
+        html.append("  <meta name='viewport' content='width=device-width, initial-scale=1.0'>")
+        html.append("  <title>AWS Bedrock Access Check Report</title>")
+        html.append("  <style>")
+        html.append("    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.6; }")
+        html.append("    .container { max-width: 1200px; margin: 0 auto; }")
+        html.append("    .header { text-align: center; margin-bottom: 30px; }")
+        html.append("    .dashboard { background: #f5f5f5; padding: 20px; border-radius: 8px; margin-bottom: 30px; }")
+        html.append("    .summary-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }")
+        html.append("    .summary-table th, .summary-table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }")
+        html.append("    .summary-table th { background-color: #f0f0f0; }")
+        html.append("    .success { color: #2e7d32; font-weight: bold; }")
+        html.append("    .warning { color: #f57c00; font-weight: bold; }")
+        html.append("    .error { color: #d32f2f; font-weight: bold; }")
+        html.append("    .info { color: #1976d2; font-weight: bold; }")
+        html.append("    .details-section { margin-bottom: 30px; }")
+        html.append("    .details-section h2 { border-bottom: 1px solid #eee; padding-bottom: 8px; }")
+        html.append("    .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; }")
+        html.append("    .model-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }")
+        html.append("    .model-card h3 { margin-top: 0; }")
+        html.append("    .region-list { display: flex; flex-wrap: wrap; gap: 10px; }")
+        html.append("    .region-badge { background: #e3f2fd; padding: 5px 10px; border-radius: 16px; font-size: 14px; }")
+        html.append("    .footer { margin-top: 30px; text-align: center; color: #666; font-size: 14px; }")
+        html.append("  </style>")
+        html.append("</head>")
+        html.append("<body>")
+        html.append("  <div class='container'>")
+        
+        # Header
+        html.append("    <div class='header'>")
+        html.append("      <h1>AWS Bedrock Access Verification Report</h1>")
+        html.append(f"      <p>Generated on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>")
+        html.append("    </div>")
+        
+        # Dashboard
+        html.append("    <div class='dashboard'>")
+        html.append("      <h2>Status Dashboard</h2>")
+        html.append("      <table class='summary-table'>")
+        html.append("        <tr><th>Component</th><th>Status</th><th>Details</th></tr>")
+        
+        # AWS Credentials
+        cred_status = check_results["aws_credentials"]["status"] or "ℹ️ INFO"
+        cred_class = "success" if "SUCCESS" in cred_status else "warning" if "WARNING" in cred_status else "error" if "ERROR" in cred_status else "info"
+        cred_details = check_results["aws_credentials"]["details"][0] if check_results["aws_credentials"]["details"] else "N/A"
+        html.append(f"        <tr><td>AWS Credentials</td><td class='{cred_class}'>{cred_status}</td><td>{cred_details}</td></tr>")
+        
+        # Bedrock Regions
+        region_status = check_results["bedrock_regions"]["status"] or "ℹ️ INFO"
+        region_class = "success" if "SUCCESS" in region_status else "warning" if "WARNING" in region_status else "error" if "ERROR" in region_status else "info"
+        region_count = len(check_results["bedrock_regions"]["available"])
+        region_details = f"{region_count} available regions"
+        html.append(f"        <tr><td>Bedrock Regions</td><td class='{region_class}'>{region_status}</td><td>{region_details}</td></tr>")
+        
+        # Bedrock Runtime
+        runtime_status = check_results["bedrock_runtime"]["status"] or "ℹ️ INFO"
+        runtime_class = "success" if "SUCCESS" in runtime_status else "warning" if "WARNING" in runtime_status else "error" if "ERROR" in runtime_status else "info"
+        runtime_details = "Runtime service accessible" if not check_results["bedrock_runtime"]["errors"] else check_results["bedrock_runtime"]["errors"][0]
+        html.append(f"        <tr><td>Bedrock Runtime</td><td class='{runtime_class}'>{runtime_status}</td><td>{runtime_details}</td></tr>")
+        
+        # Bedrock Models
+        models_status = check_results["bedrock_models"]["status"] or "ℹ️ INFO"
+        models_class = "success" if "SUCCESS" in models_status else "warning" if "WARNING" in models_status else "error" if "ERROR" in models_status else "info"
+        models_count = len(set(check_results["bedrock_models"]["available"]))
+        models_details = f"{models_count} models available"
+        html.append(f"        <tr><td>Bedrock Models</td><td class='{models_class}'>{models_status}</td><td>{models_details}</td></tr>")
+        
+        # Key Models
+        key_status = check_results["key_models"]["status"] or "ℹ️ INFO"
+        key_class = "success" if "SUCCESS" in key_status else "warning" if "WARNING" in key_status else "error" if "ERROR" in key_status else "info"
+        available_count = len(check_results["key_models"]["available"])
+        missing_count = len(check_results["key_models"]["missing"])
+        total_count = available_count + missing_count
+        key_details = f"{available_count}/{total_count} key models available"
+        html.append(f"        <tr><td>Key Models</td><td class='{key_class}'>{key_status}</td><td>{key_details}</td></tr>")
+        
+        # Model Invocation if available
+        if "model_invocations" in check_results:
+            invoke_success_count = len(check_results["model_invocations"]["successful"])
+            invoke_failed_count = len(check_results["model_invocations"]["failed"])
+            invoke_total = invoke_success_count + invoke_failed_count
+            
+            if invoke_total > 0:
+                if invoke_failed_count == 0:
+                    invoke_status = "✅ SUCCESS"
+                    invoke_class = "success"
+                elif invoke_success_count > 0:
+                    invoke_status = "⚠️ WARNING"
+                    invoke_class = "warning"
+                else:
+                    invoke_status = "❌ ERROR"
+                    invoke_class = "error"
+                    
+                invoke_details = f"{invoke_success_count}/{invoke_total} models invoked successfully"
+                html.append(f"        <tr><td>Model Invocation</td><td class='{invoke_class}'>{invoke_status}</td><td>{invoke_details}</td></tr>")
+        
+        html.append("      </table>")
+        
+        # Overall status
+        all_statuses = [
+            check_results["aws_credentials"]["status"],
+            check_results["bedrock_regions"]["status"],
+            check_results["bedrock_runtime"]["status"],
+            check_results["bedrock_models"]["status"],
+            check_results["key_models"]["status"]
+        ]
+        
+        if "❌ ERROR" in all_statuses:
+            overall_status = "❌ ERROR"
+            overall_class = "error"
+            overall_message = "There are critical issues with your Bedrock setup"
+        elif "⚠️ WARNING" in all_statuses:
+            overall_status = "⚠️ WARNING"
+            overall_class = "warning"
+            overall_message = "Your Bedrock setup has some issues but may work for some use cases"
+        elif all(status == "✅ SUCCESS" for status in all_statuses if status is not None):
+            overall_status = "✅ SUCCESS"
+            overall_class = "success"
+            overall_message = "Your Bedrock setup looks good!"
+        else:
+            overall_status = "ℹ️ INFO"
+            overall_class = "info"
+            overall_message = "Some checks were inconclusive"
+        
+        html.append(f"      <h3>Overall Status: <span class='{overall_class}'>{overall_status}</span></h3>")
+        html.append(f"      <p>{overall_message}</p>")
+        html.append("    </div>")
+        
+        # Regions Section
+        html.append("    <div class='details-section'>")
+        html.append("      <h2>Available Regions</h2>")
+        html.append("      <div class='region-list'>")
+        for region in check_results["bedrock_regions"]["available"]:
+            html.append(f"        <div class='region-badge'>{region}</div>")
+        html.append("      </div>")
+        html.append("    </div>")
+        
+        # SageMaker Alternatives Section
+        if "sagemaker_alternatives" in check_results and check_results["sagemaker_alternatives"]:
+            # Exclude error entry when counting alternatives
+            alternatives_count = sum(1 for k in check_results["sagemaker_alternatives"] if k != "error")
+            
+            if alternatives_count > 0:
+                html.append("    <div class='details-section'>")
+                html.append("      <h2>SageMaker JumpStart Alternatives</h2>")
+                html.append("      <p>The following alternatives are available in SageMaker JumpStart for missing Bedrock models:</p>")
+                html.append("      <table class='summary-table'>")
+                html.append("        <tr><th>Missing Bedrock Model</th><th>SageMaker Alternative</th><th>Notes</th></tr>")
+                
+                for model_id, alternatives in check_results["sagemaker_alternatives"].items():
+                    if model_id != "error" and alternatives:
+                        for i, alt in enumerate(alternatives):
+                            if i == 0:  # First alternative for this model
+                                html.append(f"        <tr><td>{model_id}</td><td>{alt['name']} ({alt['model_id']})</td><td>{alt['notes']}</td></tr>")
+                            else:  # Additional alternatives
+                                html.append(f"        <tr><td></td><td>{alt['name']} ({alt['model_id']})</td><td>{alt['notes']}</td></tr>")
+                
+                html.append("      </table>")
+                html.append("    </div>")
+        
+        # Models Section
+        html.append("    <div class='details-section'>")
+        html.append("      <h2>Model Availability</h2>")
+        html.append("      <div class='model-grid'>")
+        
+        # Key models with their status
+        all_key_models = check_results["key_models"]["available"] + check_results["key_models"]["missing"]
+        
+        # Get invocation results if available
+        invoke_success = []
+        invoke_fail = []
+        if "model_invocations" in check_results:
+            invoke_success = check_results["model_invocations"]["successful"]
+            invoke_fail = check_results["model_invocations"]["failed"]
+        
+        for model in sorted(all_key_models):
+            is_available = model in check_results["key_models"]["available"]
+            status_class = "success" if is_available else "error"
+            status_text = "Available" if is_available else "Not Available"
+            
+            html.append(f"        <div class='model-card'>")
+            html.append(f"          <h3>{model}</h3>")
+            html.append(f"          <p>Listing: <span class='{status_class}'>{status_text}</span></p>")
+            
+            # Add invocation status if available
+            if is_available and (model in invoke_success or model in invoke_fail):
+                invoke_status = "Invocation Successful" if model in invoke_success else "Invocation Failed"
+                invoke_class = "success" if model in invoke_success else "error"
+                html.append(f"          <p>Test: <span class='{invoke_class}'>{invoke_status}</span></p>")
+            elif is_available and "model_invocations" in check_results:
+                html.append(f"          <p>Test: <span class='info'>Not Tested</span></p>")
+                
+            # Get the purpose for this model
+            model_purpose = "Unknown"
+            for model_info in needed_models:
+                if model_info["id"] == model:
+                    model_purpose = model_info["purpose"]
+                    break
+                    
+            html.append(f"          <p><small>{model_purpose}</small></p>")
+            
+            # Add detailed model information if available
+            if "model_details" in check_results and model in check_results["model_details"]:
+                model_details = check_results["model_details"][model]
+                
+                # Add collapsible section for details
+                html.append("          <details>")
+                html.append("            <summary>Advanced Details</summary>")
+                html.append("            <div style='margin-top: 10px;'>")
+                
+                # Specs section
+                if "specs" in model_details and model_details["specs"]:
+                    html.append("              <h4>Specifications</h4>")
+                    html.append("              <ul>")
+                    for key, value in model_details["specs"].items():
+                        if key != "error":
+                            html.append(f"                <li><strong>{key}:</strong> {value}</li>")
+                    html.append("              </ul>")
+                
+                # Inference parameters
+                if "inference_params" in model_details and model_details["inference_params"]:
+                    html.append("              <h4>Inference Parameters</h4>")
+                    html.append("              <ul>")
+                    for key, value in model_details["inference_params"].items():
+                        html.append(f"                <li><strong>{key}:</strong> {value}</li>")
+                    html.append("              </ul>")
+                
+                # Quotas
+                if "quotas" in model_details and model_details["quotas"]:
+                    html.append("              <h4>Quotas</h4>")
+                    html.append("              <ul>")
+                    for key, value in model_details["quotas"].items():
+                        if key != "error":
+                            if isinstance(value, dict):
+                                quota_str = f"{value.get('value')} {value.get('unit', '')}"
+                                if value.get('adjustable'):
+                                    quota_str += " (adjustable)"
+                                html.append(f"                <li><strong>{key}:</strong> {quota_str}</li>")
+                            else:
+                                html.append(f"                <li><strong>{key}:</strong> {value}</li>")
+                    html.append("              </ul>")
+                
+                # Close the collapsible section
+                html.append("            </div>")
+                html.append("          </details>")
+            
+            html.append("        </div>")
+        
+        html.append("      </div>")
+        html.append("    </div>")
+        
+        # Troubleshooting Section
+        if overall_status != "✅ SUCCESS":
+            html.append("    <div class='details-section'>")
+            html.append("      <h2>Troubleshooting Tips</h2>")
+            
+            if check_results["aws_credentials"]["status"] in ["❌ ERROR", "⚠️ WARNING"]:
+                html.append("      <h3>AWS Credentials</h3>")
+                html.append("      <ul>")
+                html.append("        <li>Run 'aws configure' to set up credentials</li>")
+                html.append("        <li>Verify your credentials have Bedrock permissions</li>")
+                html.append("        <li>Check if boto3 version is at least 1.28.0</li>")
+                html.append("      </ul>")
+            
+            if check_results["bedrock_regions"]["status"] in ["❌ ERROR", "⚠️ WARNING"]:
+                html.append("      <h3>Bedrock Regions</h3>")
+                html.append("      <ul>")
+                html.append("        <li>Make sure Bedrock is enabled in your AWS account</li>")
+                html.append("        <li>Check if your IAM permissions include bedrock:ListFoundationModels</li>")
+                html.append("        <li>Verify you're checking regions where Bedrock is available</li>")
+                html.append("      </ul>")
+            
+            if check_results["key_models"]["status"] in ["❌ ERROR", "⚠️ WARNING"]:
+                html.append("      <h3>Model Access</h3>")
+                html.append("      <ul>")
+                html.append("        <li>Visit AWS console to request access to needed models: ")
+                html.append("          <a href='https://console.aws.amazon.com/bedrock/home#/modelaccess' target='_blank'>AWS Bedrock Model Access</a></li>")
+                html.append("        <li>For Claude models, make sure you've accepted Anthropic's terms of service</li>")
+                html.append("        <li>Some models require explicit subscription - check your model access</li>")
+                html.append("      </ul>")
+            html.append("    </div>")
+        
+        # Footer
+        html.append("    <div class='footer'>")
+        html.append("      <p>Generated by AWS Bedrock Access Verification Tool</p>")
+        html.append(f"      <p>Report ID: {timestamp}</p>")
+        html.append("    </div>")
+        
+        html.append("  </div>")
+        html.append("</body>")
+        html.append("</html>")
+        
+        # Write the HTML file
+        with open(filename, 'w') as f:
+            f.write('\n'.join(html))
+        
+        console.print(f"\n[green]HTML report saved to {filename}[/green]")
